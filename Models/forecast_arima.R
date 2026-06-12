@@ -3,7 +3,7 @@ knitr::opts_chunk$set(echo = TRUE)
 library(data.table)
 library(car)
 library(purrr)
-source('./_load_packages.R')
+source('../_load_packages.R')
 library(ggtime)
 Sys.setenv(lang="en-US")
 Sys.setlocale("LC_TIME", "en_US.UTF-8")
@@ -51,19 +51,6 @@ data <- origin_data %>%
   select(Branch.Key, Month, Customer.Traffic, BeforeNewYear, NewYear, AfterNewYear)
   
 
-branches <- c("A01", "A02", "A04", "A05", "A07", "A08", "A09")
-
-new_rows <- data.frame(
-  Branch.Key = rep(branches, each = 3),
-  Month = yearmonth(rep(c("2025 Jan", "2025 Feb", "2025 Mar"), times = length(branches))),
-  Customer.Traffic = 0,
-  BeforeNewYear = rep(c(1, 0, 0), times = length(branches)),
-  NewYear = rep(c(1, 1, 0), times = length(branches)),
-  AfterNewYear = rep(c(0, 1, 1), times = length(branches))
-)
-
-data <- bind_rows(data, new_rows)
-data <- data[order(data$Branch.Key, data$Month), ]
 data
 
 
@@ -85,7 +72,7 @@ data
 
 
 # choose the branch you want to forecast, or comment out to forecast all branches
-data <- data %>% filter(Branch.Key %in% c("A07")) 
+# data <- data %>% filter(Branch.Key %in% c("A07")) 
 
 stepAhead <- 3
 augment_list <- list()
@@ -98,21 +85,21 @@ roll_fc <- data %>%
       as_tsibble(index = Month, key = Branch.Key)
     valid_part <- branch_data %>% 
       filter(Month > yearmonth("2023 Oct"))
-    pred_raw       <- rep(NA, 15)
-    pred_raw_lower <- rep(NA, 15)
-    pred_raw_upper <- rep(NA, 15)
-    pred_log       <- rep(NA, 15)
-    pred_log_lower <- rep(NA, 15)
-    pred_log_upper <- rep(NA, 15)
-    pred_naive <- rep(NA, 15)
+    pred_raw       <- rep(NA, 12)
+    pred_raw_lower <- rep(NA, 12)
+    pred_raw_upper <- rep(NA, 12)
+    pred_log       <- rep(NA, 12)
+    pred_log_lower <- rep(NA, 12)
+    pred_log_upper <- rep(NA, 12)
+    pred_naive <- rep(NA, 12)
     
-    for(i in 1:15){
+    for(i in 1:12){
       train_end <- yearmonth("2023 Oct") + (i - 1)
       train_roll <- branch_data %>%
         filter(Month <= train_end)
       fit_roll <- train_roll %>%
         model(
-          arima_raw = ARIMA(Customer.Traffic ~  BeforeNewYear + NewYear + AfterNewYear),
+          arima_raw = ARIMA(Customer.Traffic ~ BeforeNewYear + NewYear + AfterNewYear),
           arima_log = ARIMA(log1p(Customer.Traffic) ~ BeforeNewYear + NewYear + AfterNewYear),
           naive = NAIVE(Customer.Traffic)
         )
@@ -240,28 +227,25 @@ for (branch in branches) {
 branches <- unique(data$Branch.Key)
 
 for (branch in branches) {
-  branch_data <- data[data$Branch.Key == branch,]
-  actual_data <- branch_data%>% filter(Month <= yearmonth("2024 Dec"))
+  branch_data <- data[data$Branch.Key == branch, ]
+  branch_train <- augment_all %>%filter(Branch.Key == branch) 
+  branch_fc <- roll_fc[roll_fc$Branch.Key == branch, ]
   
-  branch_train <- augment_all %>% filter(Branch.Key == branch & Month <= yearmonth("2023 Oct"))
-  branch_fc <- roll_fc[roll_fc$Branch.Key == branch,]
-  interval <- branch_fc%>% filter(Month >= yearmonth("2025 Jan"))
-  
-  p <- autoplot(actual_data, Customer.Traffic, linewidth = 1, color="black") +
+  p <- autoplot(branch_data, Customer.Traffic, linewidth = 1, color="black") +
     geom_ribbon(
       aes(x = Month, ymin = predict_raw_lower, ymax = predict_raw_upper),
-      data = interval,
+      data = branch_fc,
       alpha = 0.5,
       fill = '#FEECA4'
     ) +
     geom_line(
       aes(Month, .fitted, color = "ARIMA Raw"),
-      data = branch_train %>% filter(.model == "arima_log"),
+      data = branch_train %>% filter(.model == "arima_raw"),
       alpha = 0.7,
       linewidth = 1.5
-    ) +
+    )+
     geom_line(
-      aes(Month, predict_log, color = "ARIMA Raw"),
+      aes(Month, predict_raw, color = "ARIMA Raw"),
       alpha = 0.7,
       data = branch_fc,
       linetype = "solid", 
@@ -296,19 +280,13 @@ for (branch in branches) {
       color = "grey80", 
       linewidth = 0.4
     ) +
-    geom_vline(
-      xintercept = as.numeric(as.Date(yearmonth("2025 Jan"))),
-      color = "grey80", 
-      linewidth = 0.4
-    ) +
     scale_x_yearmonth(date_breaks = "1 year", date_labels = "%Y") +
     theme_minimal() +
     theme(
       legend.position = "bottom",
       panel.grid.major.y = element_blank(),
       panel.grid.minor.y = element_blank(),
-      panel.grid.minor.x = element_blank(),
-      panel.grid.major.x = element_blank()
+      panel.grid.minor.x = element_blank()
     )
   
   print(p)
@@ -320,13 +298,10 @@ branches <- unique(data$Branch.Key)
 
 for (branch in branches) {
   branch_data <- data[data$Branch.Key == branch, ]
-  branch_data <- data[data$Branch.Key == branch,]
-  actual_data <- branch_data%>% filter(Month <= yearmonth("2024 Dec"))
+  branch_train <- augment_all %>%filter(Branch.Key == branch) 
+  branch_fc <- roll_fc[roll_fc$Branch.Key == branch, ]
   
-  branch_train <- augment_all %>% filter(Branch.Key == branch & Month <= yearmonth("2023 Oct"))
-  branch_fc <- roll_fc[roll_fc$Branch.Key == branch,]
-  
-  p <- autoplot(actual_data, Customer.Traffic, linewidth = 1, color="black") +
+  p <- autoplot(branch_data, Customer.Traffic, linewidth = 1, color="black") +
 
     geom_line(
       aes(Month, .fitted, color = "NAIVE"),

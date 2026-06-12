@@ -1,47 +1,60 @@
-
+# setup
 knitr::opts_chunk$set(echo = TRUE)
 library(data.table)
 library(car)
 library(purrr)
-source("./_load_packages.R")
+source('../_load_packages.R')
 library(ggtime)
 Sys.setenv(lang="en-US")
 Sys.setlocale("LC_TIME", "en_US.UTF-8")
 
 
+
+# Load data
 origin_data <- read.csv("data.csv")
-origin_data <- origin_data |> 
-  select(Unique.ID, Order.Creation.Time, lunar_date, Branch.Key) |>
+origin_data <- origin_data %>% 
+  select(Unique.ID, Order.Creation.Time, lunar_date, Branch.Key) %>%
   mutate(Order.Creation.Time = as.Date(Order.Creation.Time,  format = "%m/%d/%Y"),
          lunar_date = as.Date(lunar_date,  format = "%m/%d/%Y")
-         ) |>
+         ) %>% 
   filter(Order.Creation.Time >= "2021-11-01",
          Branch.Key %in% c("A01", "A02", "A04", "A05", "A07", "A08", "A09"))
 
 
-data <- origin_data |> 
+# One month before Lunar New Year: 11/29 ~ 12/29
+# Lunar New Year period: Lunar New Year's Eve (12/30) ~ Day 4 (1/4)
+# One month after Lunar New Year: 1/5 ~ 2/4
+
+# Lunar dates cannot be inferred directly from missing records (stores are closed during some days)
+# Lunar New Year in 2022 was 1/30~2/4 (Jan & Feb)
+# Lunar New Year in 2023 was 1/20~1/25 (Jan)
+# Lunar New Year in 2024 was 2/8~2/13 (Feb)
+
+# March 2023 belongs to the leap second lunar month (not within one month after Lunar New Year), so AfterNewYear is set to 0
+
+data <- origin_data %>% 
   mutate(
     Month = floor_date(Order.Creation.Time, unit = "month"),
     Month = yearmonth(Month)
-  ) |>
-  group_by(Branch.Key, Month) |>
+  ) %>%
+  group_by(Branch.Key, Month) %>%
   summarise(
     Customer.Traffic = n(),
     lunar_date_start = min(lunar_date, na.rm = TRUE),
     lunar_date_end = max(lunar_date, na.rm = TRUE),
     .groups = "drop"
-  ) |>
-  as_tsibble(index = Month, key = Branch.Key) |>
-  fill_gaps() |> 
-  group_by_key() |>
+  ) %>% 
+  as_tsibble(index = Month, key = Branch.Key) %>% 
+  fill_gaps() %>% 
+  group_by_key() %>%
   mutate(
     Customer.Traffic = if_else(
       is.na(Customer.Traffic),
       mean(Customer.Traffic, na.rm = TRUE),
       Customer.Traffic
     )
-  ) |>
-  ungroup()|>  
+  ) %>%
+  ungroup() %>%  
   mutate(
     lunar_start_md = format(lunar_date_start, "%m-%d"),
     lunar_end_md   = format(lunar_date_end, "%m-%d"),
@@ -50,60 +63,63 @@ data <- origin_data |>
     NewYear = as.integer(
       Month %in% yearmonth(c("2022 Jan", "2022 Feb", "2023 Jan", "2024 Feb"))
     )
-  ) |>
+  ) %>% 
   mutate(
     BeforeNewYear = replace_na(BeforeNewYear, 0),
     AfterNewYear = replace_na(AfterNewYear, 0),
     NewYear = replace_na(NewYear, 0),
     AfterNewYear = ifelse(Month == yearmonth("2023 Mar"),0,AfterNewYear)
-  )  |> 
+  )  %>% 
   select(Branch.Key, Month, Customer.Traffic, BeforeNewYear, NewYear, AfterNewYear)
   
 
 data
 
 
-data_A01 <- data |> 
+
+
+# # Run A01 first
+
+data_A01 <- data %>% 
   filter(Branch.Key == "A01") 
 
 # fixed
-train_end <-  "2023 Oct"
+train_end <-  "2023 Dec"
 valid_start <- "2024 Jan"
-train.data.A01 <- data_A01 |> filter_index(~ train_end)
-valid.data.A01 <- data_A01 |> filter_index(valid_start ~ .)
+train.data.A01 <- data_A01 %>% filter_index(~ train_end)
+valid.data.A01 <- data_A01 %>% filter_index(valid_start ~ .)
 max_traffic.A01 <- max(data_A01$Customer.Traffic) 
 
-fit.tslm.A01 <- train.data.A01 |>
-  model(TSLM(Customer.Traffic ~ trend() + BeforeNewYear + NewYear + AfterNewYear))
+fit.naive.A01 <- train.data.A01 %>%
+  model(NAIVE(Customer.Traffic))
 
-fc.tslm.A01.fixed <- fit.tslm.A01|>
+fc.naive.A01.fixed <- fit.naive.A01%>%
   forecast(valid.data.A01)
 
 # roll-forward
 lengthTrainPeriod.A01 <- nrow(train.data.A01)
-rollingWindowSize <- 3
+rollingWindowSize <- 1
 
 data_tr.A01 <- data_A01 |> 
   slice(1:(n()-rollingWindowSize)) |>
   stretch_tsibble(.init=lengthTrainPeriod.A01, .step= 1)
 
-future_data <- new_data(data_tr.A01, n = rollingWindowSize) |> 
-  left_join(data, by = c("Month", "Branch.Key"))
-
-# TSLM
-fc.tslm.A01 <- data_tr.A01|>
-  model(tslm_model = TSLM(Customer.Traffic ~ trend() + BeforeNewYear + NewYear + AfterNewYear)) |>
-  forecast(new_data = future_data)|>
-  group_by(.id) |>
-  slice(3) |> # 只取第3個
+# Naive
+fc.naive.A01 <- data_tr.A01|>
+  model(naive_model = NAIVE(Customer.Traffic)) |>
+  forecast(h=rollingWindowSize) %>% 
+  group_by(.id) %>%
+  slice(1) %>% # 只取第3個
   ungroup()
 
 
-p.tslm.A01 <-  data_A01 %>% 
+# # Forecast plot
+
+p.naive.A01 <-  data_A01 %>% 
   autoplot(Customer.Traffic) +
-  autolayer(fitted(fit.tslm.A01) %>% filter(!is.na(.fitted)), .fitted, color="coral1", linewidth = 0.8) +
-  geom_line(aes(y = .mean, color="Roll-forward"), data = fc.tslm.A01, linetype = "solid", linewidth = 0.8) +
-  geom_line(aes(y = .mean, color = "Fixed"), data = fc.tslm.A01.fixed,linetype = "solid",linewidth = 0.8) + 
+  autolayer(fitted(fit.naive.A01) %>% filter(!is.na(.fitted)), .fitted, color="coral1", linewidth = 0.8) +
+  geom_line(aes(y = .mean, color="Roll-forward"), data = fc.naive.A01, linetype = "solid", linewidth = 0.8) +
+  geom_line(aes(y = .mean, color = "Fixed"), data = fc.naive.A01.fixed,linetype = "solid",linewidth = 0.8) + 
   geom_vline(xintercept = as.numeric(as.Date(yearmonth(train_end))),linetype = "solid",color = "grey55",linewidth = 0.6) +
   geom_vline(xintercept = as.numeric(as.Date(yearmonth(valid_start))),linetype = "solid",color = "grey55",linewidth = 0.6) +
   annotate("segment", x = yearmonth(valid_start), y = max_traffic.A01 * 1.01, 
@@ -120,22 +136,24 @@ p.tslm.A01 <-  data_A01 %>%
         axis.text.y = element_text(angle = 90, hjust = 1)) +
   labs(title = "A01 Forecast (Naive)", x = "Time", y = "Customer Traffic")
 
-p.tslm.A01
+p.naive.A01
 
 
-fc.tslm.res.A01 <- fc.tslm.A01 |>
+# # error plot
+
+fc.naive.res.A01 <- fc.naive.A01 |>
   left_join(valid.data.A01, by = "Month") |>
-  mutate(rolled_errors = valid.data.A01$Customer.Traffic - fc.tslm.A01$.mean)
+  mutate(rolled_errors = valid.data.A01$Customer.Traffic - fc.naive.A01$.mean)
 
 df.errors.train <- train.data.A01 %>% 
   mutate(three.month.ahead.error = Customer.Traffic - lag(Customer.Traffic, rollingWindowSize)) %>% 
   filter(!is.na(three.month.ahead.error))
 
-max_traffic_err.A01 <- max(abs(fc.tslm.res.A01$rolled_errors), na.rm = TRUE)
+max_traffic_err.A01 <- max(abs(fc.naive.res.A01$rolled_errors), na.rm = TRUE)
 
 p.errors <- df.errors.train %>%
   autoplot(three.month.ahead.error, linewidth = 0.8, aes(color = "Train")) +
-  geom_line(aes(Month, rolled_errors, color="Validation"),data = fc.tslm.res.A01,linetype = "dashed",linewidth = 0.8) +
+  geom_line(aes(Month, rolled_errors, color="Validation"),data = fc.naive.res.A01,linetype = "dashed",linewidth = 0.8) +
   labs(title = "Errors", x = "Time", y = "Error") +
   geom_vline(xintercept = as.numeric(as.Date(yearmonth(train_end))),linetype = "solid",color = "grey55",linewidth = 0.6) +
   geom_vline(xintercept = as.numeric(as.Date(yearmonth(valid_start))),linetype = "solid",color = "grey55",linewidth = 0.6) +
@@ -151,7 +169,9 @@ p.errors <- df.errors.train %>%
 p.errors
 
 
-run_tslm_model <- function(data, branch_id, train_end = "2023 Oct", valid_start = "2024 Jan",
+# run 7 branches
+# roll-forward
+run_naive_model <- function(data, branch_id, train_end = "2023 Oct", valid_start = "2024 Jan",
                              rollingWindowSize = 3) {
   
   message("[", branch_id, "] Training model...")
@@ -165,10 +185,9 @@ run_tslm_model <- function(data, branch_id, train_end = "2023 Oct", valid_start 
   max_traffic <- max(data_branch$Customer.Traffic, na.rm = TRUE)
   
   fit <- train.data %>%
-    model(tslm_model = TSLM(Customer.Traffic ~ trend() + BeforeNewYear + NewYear + AfterNewYear),
-          tslm_log = TSLM(log(Customer.Traffic) ~ trend() + season()+ BeforeNewYear + NewYear + AfterNewYear))
+    model(naive_model = NAIVE(Customer.Traffic))
   
-  # roll-forward
+  # roll-forward naive
   message("[", branch_id, "] Roll-forward forecasting...")
   lengthTrainPeriod <- nrow(train.data)
   
@@ -176,40 +195,23 @@ run_tslm_model <- function(data, branch_id, train_end = "2023 Oct", valid_start 
     slice(1:(n() - rollingWindowSize)) |>
     stretch_tsibble(.init = lengthTrainPeriod, .step = 1)
   
-  clean_festivals <- data %>% 
-    as_tibble() %>% 
-    distinct(Month, BeforeNewYear, NewYear, AfterNewYear)
-
-  future_data <- new_data(data_tr, n = rollingWindowSize) |> 
-    left_join(clean_festivals, by = "Month")
-  
   fc.roll <- data_tr |>
-    model(tslm_model = TSLM(Customer.Traffic ~ trend() + BeforeNewYear + NewYear + AfterNewYear),
-          tslm_log = TSLM(log(Customer.Traffic) ~ trend() + season()+ BeforeNewYear + NewYear + AfterNewYear)
-          ) |>
-    forecast(new_data = future_data)|> 
-    group_by(.id, .model) %>%
+    model(naive_model = NAIVE(Customer.Traffic)) |>
+    forecast(h = rollingWindowSize) %>% 
+    group_by(.id) %>%
     slice(rollingWindowSize) %>%
     ungroup()
   
-  fc.roll_df <- fc.roll %>% 
-    as_tibble() %>% 
-    mutate(.mean = mean(Customer.Traffic))
-  
   # forecast plot
-  message("[", branch_id, "] Drawing forecast plot...")
+   message("[", branch_id, "] Drawing forecast plot...")
   
-  fitted_lines <- fitted(fit) %>% 
-    filter(!is.na(.fitted)) %>% 
-    as_tibble()
-  
-  p.forecast <- data_branch %>% 
+   p.forecast <- data_branch %>% 
     autoplot(Customer.Traffic) +
-    geom_line(aes(Month, .fitted, color = .model), data = fitted_lines, linewidth = 0.8) +    
-    geom_line(aes(Month, .mean, color = .model), data = fc.roll_df, linetype = "dashed", linewidth = 0.9) +    
-    labs(title = paste0(branch_id, " Forecast Comparison"),x = "Time",y = "Customer Traffic") +
-    geom_vline(xintercept = as.numeric(as.Date(yearmonth(train_end))),linetype = "solid",color = "grey55",linewidth = 0.6) +
-    geom_vline(xintercept = as.numeric(as.Date(yearmonth(valid_start))),linetype = "solid",color = "grey55",linewidth = 0.6) +
+    autolayer(fitted(fit) %>% filter(!is.na(.fitted)), .fitted, color="coral1", linewidth = 0.8) +
+    geom_line(aes(y = .mean),data = fc.roll,linetype = "dashed", color="coral1", linewidth = 0.8) +
+    labs(title = paste0(branch_id, " Forecast (Naive)"),x = "Time",y = "Customer Traffic") +
+    geom_vline(xintercept = as.numeric(as.Date(yearmonth(train_end))),linetype = "dashed",color = "grey55",linewidth = 0.6) +
+    geom_vline(xintercept = as.numeric(as.Date(yearmonth(valid_start))),linetype = "dashed",color = "grey55",linewidth = 0.6) +
     annotate("segment", x = yearmonth(valid_start), y = max_traffic * 1.01, xend = max(valid.data$Month), yend = max_traffic * 1.01,
       arrow = arrow(length = unit(0.25, "cm"), ends = "both"),color = "grey55") +
     annotate(geom = "text",x = yearmonth("2024 Jul"),y = max_traffic * 1.05,label = "Validation",color = "grey37") +
@@ -218,26 +220,25 @@ run_tslm_model <- function(data, branch_id, train_end = "2023 Oct", valid_start 
     annotate(geom = "text", x = yearmonth("2023 Jan"), y = max_traffic * 1.05, label = "Training") +
     theme(axis.text.x = element_text(angle = 45, hjust = 1),
           axis.text.y = element_text(angle = 90, hjust = 1)) +
-    scale_x_yearmonth(date_breaks = "6 months", date_labels = "%Y %m")+
-    scale_color_manual(values = c("tslm_model" = "#e63946", "tslm_log" = "#457b9d"))
+    scale_x_yearmonth(date_breaks = "6 months", date_labels = "%Y %m")
   
   # error plot
-  message("[", branch_id, "] Drawing error plot...")
+   message("[", branch_id, "] Drawing error plot...")
   
-  fc.res <- fc.roll_df |>
-    left_join(valid.data |> as_tibble() |> select(Month, Actual = Customer.Traffic), by = "Month") |>
+   fc.res <- fc.roll |>
+    left_join(valid.data |> select(Month, Actual = Customer.Traffic),by = "Month") |>
     mutate(rolled_errors = Actual - .mean)
   
-  df.errors.train <- train.data %>% 
+   df.errors.train <- train.data %>% 
     mutate(three.month.ahead.error = Customer.Traffic - lag(Customer.Traffic, rollingWindowSize)) %>% 
     filter(!is.na(three.month.ahead.error))
   
-  max_traffic_err <- max(abs(fc.res$rolled_errors), na.rm = TRUE)
+   max_traffic_err <- max(abs(fc.res$rolled_errors), na.rm = TRUE)
   
-  p.error <- df.errors.train %>%
-    autoplot(three.month.ahead.error, linewidth = 0.5, color = "grey75") +
-    geom_line(aes(Month, rolled_errors, color = .model), data = fc.res, linetype = "solid", linewidth = 0.8) +
-    labs(title = paste0(branch_id, " Errors"), x = "Time", y = "Error") +
+   p.error <- df.errors.train %>%
+    autoplot(three.month.ahead.error, linewidth = 0.8, aes(color = "Train")) +
+    geom_line(aes(Month, rolled_errors, color="Validation"),data = fc.res,linetype = "dashed",linewidth = 0.8) +
+    labs(title = paste0(branch_id, " Errors (Naive)"), x = "Time", y = "Error") +
     geom_vline(xintercept = as.numeric(as.Date(yearmonth(train_end))), linetype = "solid", color = "grey55", linewidth = 0.6) +
     geom_vline( xintercept = as.numeric(as.Date(yearmonth(valid_start))), linetype = "solid", color = "grey55", linewidth = 0.6) +
     annotate("segment", x = yearmonth(valid_start), y = max_traffic_err * 0.95, xend = max(valid.data$Month), yend = max_traffic_err * 0.95,
@@ -245,9 +246,9 @@ run_tslm_model <- function(data, branch_id, train_end = "2023 Oct", valid_start 
     annotate(geom = "text", x = yearmonth("2024 Jul"), y = max_traffic_err * 1.1, label = "Validation") +
     theme(axis.text.y = element_text(angle = 90, hjust = 1)) +
     scale_x_yearmonth(date_breaks = "6 months", date_labels = "%Y %m") +
-    scale_color_manual(values = c("tslm_model" = "#e63946", "tslm_log" = "#457b9d"))
+    scale_color_manual(name = "type", values = c("Train" = "#f28482","Validation" = "#45adad"))
   
-  message("[", branch_id, "] Finished.")
+   message("[", branch_id, "] Finished.")
   
   return(list(
     branch = branch_id,
@@ -260,11 +261,11 @@ run_tslm_model <- function(data, branch_id, train_end = "2023 Oct", valid_start 
 }
 
 
+# run function for all branches
 branch_list <- c("A01", "A02", "A04", "A05", "A07", "A08", "A09")
-
 library(progress)
 
-# Progress bar
+# progress bar setup
 pb <- progress_bar$new(
   total = length(branch_list),
   format = "[:bar] :current/:total :percent | Running :branch"
@@ -276,12 +277,14 @@ for (b in branch_list) {
   cat("\014")  # clear console
   pb$tick(tokens = list(branch = b))
   message("")
-  result_list[[b]] <- run_tslm_model(data, b)
+  result_list[[b]] <- run_naive_model(data, b)
 }
 
 message("Done.")
 
 
+
+# plots
 # forecast plot
 for (b in names(result_list)) {
   print(result_list[[b]]$forecast_plot)
@@ -299,6 +302,23 @@ valid_errors_all <- bind_rows(
       mutate(Branch.Key = x$branch)
   })
 )
+
+p.valid.errors.all <- valid_errors_all %>%
+  ggplot(aes(x = Month, y = rolled_errors, color = Branch.Key)) +
+  geom_line(linewidth = 0.8) +
+  labs(
+    title = "Validation Errors Across Branches (Naive)",
+    x = "Time",
+    y = "Rolling 3-Step Ahead Error",
+    color = "Branch"
+  ) +
+  scale_x_yearmonth(date_breaks = "1 month", date_labels = "%Y %m") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+p.valid.errors.all
+
+
+# accuracy
 
 accuracy_table <- map_dfr(result_list, function(x){
 

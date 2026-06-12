@@ -9,7 +9,7 @@ Sys.setenv(lang="en-US")
 Sys.setlocale("LC_TIME", "en_US.UTF-8")
 
 
-origin_data <- read.csv("data.csv")
+origin_data <- read.csv("../data.csv")
 origin_data <- origin_data |> 
   select(Unique.ID, Order.Creation.Time, lunar_date, Branch.Key) |>
   mutate(Order.Creation.Time = as.Date(Order.Creation.Time,  format = "%m/%d/%Y"),

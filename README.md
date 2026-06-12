@@ -1,8 +1,9 @@
 # Optimizing Hair Salon Marketing Resource Allocation Using Customer Traffic Forecast
-This is the reference code for Group 1's final project in the **Business Analytics Using Forecasting** course.
 
-## Data Availability
-Due to a non-disclosure agreement (NDA) with the company, the original dataset used in this project cannot be publicly shared. Please replace it with your own dataset and rename the file to `data.csv` before running the code.
+This repository contains the reference code for Group 1's final project in the **Business Analytics Using Forecasting** course (2026).
+
+> **Note:** Due to a non-disclosure agreement (NDA) with the company, the original dataset cannot be publicly shared. Please replace it with your own dataset and rename the file to `data.csv` before running the code.
+
 
 ## Data Preprocessing
 1. Rename your dataset file to `data.csv`.
